@@ -16,40 +16,56 @@
 
 import time
 import logging
-import random
 
 from twisted.web import server, xmlrpc, error
 from twisted.web.resource import Resource
 from twisted.web.xmlrpc import withRequest
+from twisted.protocols.policies import TimeoutMixin
+from twisted.internet.protocol import Protocol
 from twisted.internet.defer import inlineCallbacks, returnValue
-from twisted.internet import reactor
 from twisted.python import log
 
-import models
-from models import Cracker, Report
 import config
 import controllers
 import utils
 import stats
 import peering
 
-class Server(xmlrpc.XMLRPC):
+
+"""Timeout after 5 minutes"""
+TIMEOUT = 300
+
+class Server(xmlrpc.XMLRPC, Protocol, TimeoutMixin):
     """
     An example object to be published.
     """
+    def __init__(self):
+        self.connectionMade()
+
+    def connectionMade(self):
+        self.setTimeout(TIMEOUT)
+
+    def dataReceived(self, data):
+        self.resetTimeout()
+
+    def timeoutConnection(self):
+        self.transport.abortConnection()
 
     @withRequest
     @inlineCallbacks
     def xmlrpc_add_hosts(self, request, hosts):
         try:
             x_real_ip = request.requestHeaders.getRawHeaders("X-Real-IP")
+            self.dataReceived()
             remote_ip = x_real_ip[0] if x_real_ip else request.getClientIP()
             now = time.time()
 
             logging.info("add_hosts({}) from {}".format(hosts, remote_ip))
             yield controllers.handle_report_from_client(remote_ip, now, hosts)
+            self.dataReceived()
             try:
                 yield peering.send_update(remote_ip, now, hosts)
+                self.dataReceived()
             except xmlrpc.Fault, e:
                 raise e
             except Exception, e:
@@ -68,6 +84,7 @@ class Server(xmlrpc.XMLRPC):
         try:
             x_real_ip = request.requestHeaders.getRawHeaders("X-Real-IP")
             remote_ip = x_real_ip[0] if x_real_ip else request.getClientIP()
+            self.dataReceived()
 
             logging.debug("get_new_hosts({},{},{},{}) from {}".format(timestamp, threshold, 
                 hosts_added, resiliency, remote_ip))
@@ -97,6 +114,7 @@ class Server(xmlrpc.XMLRPC):
 
             result = {}
             result['timestamp'] = str(long(time.time()))
+            self.dataReceived()
             result['hosts'] = yield controllers.get_qualifying_crackers(
                     threshold, resiliency, timestamp, 
                     config.max_reported_crackers, set(hosts_added))
@@ -108,8 +126,20 @@ class Server(xmlrpc.XMLRPC):
             raise xmlrpc.Fault(105, "Error in get_new_hosts: {}".format(str(e)))
         returnValue( result)
 
-class WebResource(Resource):
+class WebResource(Resource, Protocol, TimeoutMixin):
     #isLeaf = True
+
+    def __init__(self):
+        self.connectionMade()
+
+    def connectionMade(self):
+        self.setTimeout(TIMEOUT)
+
+    def dataReceived(self, data):
+        self.resetTimeout()
+
+    def timeoutConnection(self):
+        self.transport.abortConnection()
 
     def getChild(self, name, request):
         if name == '':
@@ -117,17 +147,21 @@ class WebResource(Resource):
         return Resource.getChild(self, name, request)
 
     def render_GET(self, request):
+        self.dataReceived()
         logging.debug("GET({})".format(request))
         request.setHeader("Content-Type", "text/html; charset=utf-8")
+
         def done(result):
             if result is None:
                 request.write("<h1>An error has occurred</h1>")
             else:
                 request.write(result.encode('utf-8'))
             request.finish()
+
         def fail(err):
             request.processingFailed(err)
         stats.render_stats().addCallbacks(done, fail)
+
         return server.NOT_DONE_YET
 
 # vim: tabstop=8 expandtab shiftwidth=4 softtabstop=4
