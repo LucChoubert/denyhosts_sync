@@ -1,3 +1,7 @@
+Release 3.0.1 (2021-11-26)
+- Migration to python3
+- Performance improvment
+
 Release 2.2.3 (2017-07-10)
 - Generate graph even if no data, with banner saying 'not enough data'
 
